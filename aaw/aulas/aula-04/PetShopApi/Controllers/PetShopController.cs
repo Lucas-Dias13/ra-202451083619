@@ -36,40 +36,66 @@ public class PetShopController : ControllerBase
 
     // ============================================================ ENDPOINT 01
     /// <summary>Lista os 50 primeiros pets para a tela inicial do aplicativo.</summary>
-    [HttpPost("api/v1/getPets")]
-    public IActionResult GetPets()
+    [HttpGet("api/v1/pets")]
+    public ActionResult<Pagina<Pet>> ListarPets(
+        [FromQuery] int page = 1,
+        [FromQuery] int size = 20)
     {
-        var pets = _store.Pets.Take(50).ToList();
+        if (page < 1 || size < 1 || size > 100)
+        {
+            return Problem(
+                title: "Parâmetro de paginação inválido.",
+                detail: "'page' começa em 1 e 'size' deve estar entre 1 e 100.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
 
-        return Ok(pets);
+        var total = _store.Pets.Count;
+        var itens = _store.Pets.Skip((page - 1) * size).Take(size).ToList();
+
+        return Ok(new Pagina<Pet> { Page = page, Size = size, Total = total, Items = itens });
     }
 
     // ============================================================ ENDPOINT 02
     /// <summary>Exclui um pet do cadastro.</summary>
     /// <remarks>Usado pelo botão "remover" da tela de cadastro.</remarks>
-    [HttpGet("api/v1/deletarPet")]
-    public IActionResult DeletarPet([FromQuery] int id)
+    [HttpDelete("api/v1/pets/{id:int}")]
+    public IActionResult RemoverPet(int id)
     {
-        var removeu = _store.RemoverPet(id);
+        if (!_store.RemoverPet(id))
+        {
+            return Problem(
+                title: "Pet não encontrado.",
+                detail: $"Não existe pet com id {id}.",
+                statusCode: StatusCodes.Status404NotFound,
+                instance: $"/api/v1/pets/{id}");
+        }
 
-        return Ok(new { removido = removeu, id, mensagem = removeu ? "Pet removido." : "Pet nao existia." });
+        return NoContent();
     }
 
     // ============================================================ ENDPOINT 03
     /// <summary>Consulta a ficha de um pet.</summary>
-    [HttpGet("api/v1/pet/{id:int}")]
-    public IActionResult FichaDoPet(int id)
+    [HttpGet("api/v1/pets/{id:int}", Name = "ObterPet")]
+    public ActionResult<Pet> ObterPet(int id)
     {
         var pet = _store.BuscarPet(id);
-        if (pet is null) return NotFound();
+        if (pet is null)
+        {
+            return Problem(
+                title: "Pet não encontrado.",
+                detail: $"Não existe pet com id {id}.",
+                statusCode: StatusCodes.Status404NotFound,
+                instance: $"/api/v1/pets/{id}");
+        }
 
         return Ok(pet);
     }
 
     // ============================================================ ENDPOINT 04
     /// <summary>Lista os atendimentos de banho e tosa.</summary>
-    [HttpGet("api/v1/banhosTosa")]
-    public IActionResult BanhosTosa([FromQuery] int page = 1, [FromQuery] int size = 20)
+    [HttpGet("api/v1/banhos-e-tosas")]
+    public ActionResult<Pagina<BanhoTosa>> ListarBanhosETosas(
+        [FromQuery] int page = 1, [FromQuery] int size = 20)
     {
         var itens = _store.BanhosETosas.Skip((page - 1) * size).Take(size).ToList();
 
@@ -77,35 +103,48 @@ public class PetShopController : ControllerBase
     }
 
     /// <summary>Lista os tutores do programa de fidelidade.</summary>
-    [HttpGet("api/v1/tutores_vip")]
-    public IActionResult TutoresVip([FromQuery] int page = 1, [FromQuery] int size = 20)
+    [HttpGet("api/v1/tutores")]
+    public ActionResult<Pagina<Tutor>> ListarTutores(
+        [FromQuery] bool? vip = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int size = 20)
     {
-        var vips = _store.Tutores.Where(t => t.Vip).ToList();
-        var itens = vips.Skip((page - 1) * size).Take(size).ToList();
+        IEnumerable<Tutor> consulta = _store.Tutores;
+        if (vip is not null) consulta = consulta.Where(t => t.Vip == vip.Value);
 
-        return Ok(new { page, size, total = vips.Count, items = itens });
+        var todos = consulta.ToList();
+        var itens = todos.Skip((page - 1) * size).Take(size).ToList();
+
+        return Ok(new Pagina<Tutor> { Page = page, Size = size, Total = todos.Count, Items = itens });
     }
 
     // ============================================================ ENDPOINT 05
     /// <summary>Cadastra um pet novo.</summary>
     [HttpPost("api/v1/pets")]
-    public IActionResult CadastrarPet([FromBody] Pet pet)
+    [ProducesResponseType(typeof(Pet), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public ActionResult<Pet> CadastrarPet([FromBody] Pet pet)
     {
         var criado = _store.CriarPet(pet);
 
-        return Ok(criado);
+        return CreatedAtAction(nameof(ObterPet), new { id = criado.Id }, criado);
     }
 
     // ============================================================ ENDPOINT 06
     /// <summary>Consulta um pet pelo id (endpoint usado pelo app mobile).</summary>
-    [HttpGet("api/v1/pets/{id:int}")]
-    public IActionResult ObterPet(int id)
+    [HttpGet("api/v1/pets/{id:int}", Name = "ObterPet")]
+    [ProducesResponseType(typeof(Pet), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public ActionResult<Pet> ObterPet(int id)
     {
         var pet = _store.BuscarPet(id);
-
         if (pet is null)
         {
-            return Ok(new { erro = "Pet nao encontrado", id });
+            return Problem(
+                title: "Pet não encontrado.",
+                detail: $"Não existe pet com id {id}.",
+                statusCode: StatusCodes.Status404NotFound,
+                instance: $"/api/v1/pets/{id}");
         }
 
         return Ok(pet);
@@ -117,91 +156,179 @@ public class PetShopController : ControllerBase
     /// O campo "nome" foi renomeado para "nomeDoPet" no último release para
     /// combinar com o vocabulário do time de produto.
     /// </remarks>
-    [HttpGet("api/pets")]
-    public IActionResult PetsDoAppAntigo([FromQuery] int page = 1, [FromQuery] int size = 20)
+    [HttpGet("api/v1/pets")]
+    public ActionResult<Pagina<PetV1>> ListarPetsV1([FromQuery] int page = 1, [FromQuery] int size = 20)
     {
-        var itens = _store.Pets
-            .Skip((page - 1) * size)
-            .Take(size)
-            .Select(p => new
-            {
-                p.Id,
-                nomeDoPet = p.Nome,
-                p.Especie,
-                p.Raca,
-                p.TutorId
-            })
+        var itens = _store.Pets.Skip((page - 1) * size).Take(size)
+            .Select(p => new PetV1 { Id = p.Id, Nome = p.Nome, Especie = p.Especie, Raca = p.Raca })
             .ToList();
 
-        return Ok(new { page, size, total = _store.Pets.Count, items = itens });
+        return Ok(new Pagina<PetV1> { Page = page, Size = size, Total = _store.Pets.Count, Items = itens });
+    }
+
+    [HttpGet("api/v2/pets")]
+    public ActionResult<Pagina<PetV2>> ListarPetsV2([FromQuery] int page = 1, [FromQuery] int size = 20)
+    {
+        var itens = _store.Pets.Skip((page - 1) * size).Take(size)
+            .Select(p => new PetV2 { Id = p.Id, NomeDoPet = p.Nome, Especie = p.Especie, Raca = p.Raca })
+            .ToList();
+
+        return Ok(new Pagina<PetV2> { Page = page, Size = size, Total = _store.Pets.Count, Items = itens });
     }
 
     // ============================================================ ENDPOINT 08
     /// <summary>Consulta o resultado de um exame.</summary>
-    [HttpGet("api/v1/petshops/{petshopId:int}/clientes/{clienteId:int}/pets/{petId:int}/consultas/{consultaId:int}/exames/{exameId:int}")]
-    public IActionResult ResultadoDeExame(int petshopId, int clienteId, int petId, int consultaId, int exameId)
+    [HttpGet("api/v1/exames/{id:int}", Name = "ObterExame")]
+    public ActionResult<Exame> ObterExame(int id)
     {
-        var exame = _store.Exames.FirstOrDefault(e => e.Id == exameId && e.ConsultaId == consultaId);
-        if (exame is null) return NotFound();
+        var exame = _store.Exames.FirstOrDefault(e => e.Id == id);
+        if (exame is null)
+        {
+            return Problem(
+                title: "Exame não encontrado.",
+                detail: $"Não existe exame com id {id}.",
+                statusCode: StatusCodes.Status404NotFound,
+                instance: $"/api/v1/exames/{id}");
+        }
 
         return Ok(exame);
+    }
+
+    [HttpGet("api/v1/consultas/{consultaId:int}/exames")]
+    public ActionResult<List<Exame>> ExamesDaConsulta(int consultaId)
+    {
+        if (!_store.Consultas.Any(c => c.Id == consultaId))
+        {
+            return Problem(
+                title: "Consulta não encontrada.",
+                statusCode: StatusCodes.Status404NotFound,
+                instance: $"/api/v1/consultas/{consultaId}");
+        }
+
+        return Ok(_store.Exames.Where(e => e.ConsultaId == consultaId).ToList());
     }
 
     // ============================================================ ENDPOINT 09
     /// <summary>Lista as consultas veterinárias para o relatório da clínica.</summary>
     [HttpGet("api/v1/consultas")]
-    public IActionResult Consultas()
+    public ActionResult<Pagina<Consulta>> ListarConsultas(
+        [FromQuery] int page = 1,
+        [FromQuery] int size = TamanhoPadrao,
+        [FromQuery] int? petId = null,
+        [FromQuery] string? veterinario = null,
+        [FromQuery] string? sort = null)
     {
-        return Ok(_store.Consultas);
+        if (page < 1 || size < 1 || size > TamanhoMaximo)
+        {
+            return Problem(
+                title: "Parâmetro de paginação inválido.",
+                detail: $"'page' começa em 1 e 'size' deve estar entre 1 e {TamanhoMaximo}.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        IEnumerable<Consulta> consulta = _store.Consultas;
+
+        // Filtros são query strings DO recurso — nunca endpoints novos
+        // como /consultasDoPet ou /buscarConsultaPorVeterinario.
+        if (petId is not null)
+            consulta = consulta.Where(c => c.PetId == petId.Value);
+
+        if (!string.IsNullOrWhiteSpace(veterinario))
+            consulta = consulta.Where(c => c.Veterinario.Contains(veterinario, StringComparison.OrdinalIgnoreCase));
+
+        consulta = sort switch
+        {
+            "data" => consulta.OrderBy(c => c.Data),
+            "-data" => consulta.OrderByDescending(c => c.Data),
+            _ => consulta.OrderBy(c => c.Id)
+        };
+
+        var todos = consulta.ToList();
+        var itens = todos.Skip((page - 1) * size).Take(size).ToList();
+
+        return Ok(new Pagina<Consulta>
+        {
+            Page = page, Size = size, Total = todos.Count, Items = itens
+        });
     }
 
     // ============================================================ ENDPOINT 10
     /// <summary>Registra a carteira de vacinação do pet.</summary>
-    [HttpPut("api/v1/pets/{id:int}/vacinas")]
-    public IActionResult RegistrarVacina(int id, [FromBody] Vacina vacina)
+    [HttpPost("api/v1/pets/{id:int}/vacinas")]
+    public ActionResult<Vacina> AplicarVacina(int id, [FromBody] Vacina vacina)
     {
-        var pet = _store.BuscarPet(id);
-        if (pet is null) return NotFound();
+        if (_store.BuscarPet(id) is null)
+        {
+            return Problem(title: "Pet não encontrado.",
+                           statusCode: StatusCodes.Status404NotFound,
+                           instance: $"/api/v1/pets/{id}");
+        }
 
-        _store.RegistrarVacina(id, string.IsNullOrWhiteSpace(vacina.Nome) ? "V10" : vacina.Nome);
+        var criada = _store.RegistrarVacina(id, vacina.Nome);
 
+        // 201 + Location do recurso criado (ver gabarito 05)
+        return CreatedAtAction(nameof(ObterVacina), new { id, vacinaId = criada.Id }, criada);
+    }
+
+    [HttpPut("api/v1/pets/{id:int}/vacinas")]
+    public ActionResult<List<Vacina>> SubstituirCarteira(int id, [FromBody] List<Vacina> carteira)
+    {
+        if (_store.BuscarPet(id) is null)
+        {
+            return Problem(title: "Pet não encontrado.",
+                           statusCode: StatusCodes.Status404NotFound,
+                           instance: $"/api/v1/pets/{id}");
+        }
+
+        _store.SubstituirCarteira(id, carteira);    // apaga as antigas e grava as enviadas
         return Ok(_store.VacinasDoPet(id));
     }
 
     // ============================================================ ENDPOINT 11
     /// <summary>Autentica o tutor no aplicativo.</summary>
-    [HttpPost("api/v1/sessao")]
-    public IActionResult Entrar([FromBody] Credenciais credenciais)
+    [HttpPost("api/v1/sessoes")]
+    public ActionResult<TokenEmitido> Autenticar([FromBody] Credenciais credenciais)
     {
-        var tutor = _store.Tutores.FirstOrDefault(t =>
-            t.Nome.StartsWith(credenciais.Usuario, StringComparison.OrdinalIgnoreCase));
-
+        var tutor = _autenticador.Validar(credenciais);
         if (tutor is null) return Unauthorized();
 
-        _usuarioDaVez = tutor.Nome;
-        _tutorDaVez = tutor.Id;
+        // Na aula 07 isso vira um JWT assinado de verdade.
+        var token = _emissorDeTokens.Emitir(tutor);
 
-        return Ok(new { mensagem = $"Bem-vindo, {tutor.Nome}!" });
+        return Ok(new TokenEmitido { AccessToken = token, ExpiraEm = 3600 });
     }
 
     /// <summary>Lista os pets do tutor autenticado.</summary>
-    [HttpGet("api/v1/meus-pets")]
-    public IActionResult MeusPets()
+    [Authorize]
+    [HttpGet("api/v1/pets")]
+    public ActionResult<Pagina<Pet>> MeusPets([FromQuery] int page = 1, [FromQuery] int size = 20)
     {
-        if (_usuarioDaVez is null) return Unauthorized();
+        var tutorId = int.Parse(User.FindFirst("tutorId")!.Value);   // veio do token
+        var todos = _store.Pets.Where(p => p.TutorId == tutorId).ToList();
+        var itens = todos.Skip((page - 1) * size).Take(size).ToList();
 
-        var pets = _store.Pets.Where(p => p.TutorId == _tutorDaVez).ToList();
-
-        return Ok(new { tutor = _usuarioDaVez, items = pets });
+        return Ok(new Pagina<Pet> { Page = page, Size = size, Total = todos.Count, Items = itens });
     }
 
     // ============================================================ ENDPOINT 12
     /// <summary>Tabela de preços dos serviços (reajustada uma vez por ano).</summary>
     [HttpGet("api/v1/tabela-de-precos")]
+    [ProducesResponseType(typeof(List<ItemDePreco>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status304NotModified)]
     public IActionResult TabelaDePrecos()
     {
-        Response.Headers[HeaderNames.CacheControl] = "no-store, no-cache, must-revalidate";
-        Response.Headers[HeaderNames.Pragma] = "no-cache";
+        // A versão sobe quando o preço é reajustado — é a identidade do conteúdo.
+        var etag = $"\"precos-v{_store.VersaoDaTabelaDePrecos}\"";
+
+        // O cliente já tem esta versão? Devolve 304, sem corpo, sem custo.
+        var enviadoPeloCliente = Request.Headers[HeaderNames.IfNoneMatch].ToString();
+        if (enviadoPeloCliente.Split(',').Select(v => v.Trim()).Contains(etag))
+        {
+            return StatusCode(StatusCodes.Status304NotModified);
+        }
+
+        Response.Headers[HeaderNames.ETag] = etag;
+        Response.Headers[HeaderNames.CacheControl] = "public, max-age=3600";
 
         return Ok(_store.TabelaDePrecos);
     }
